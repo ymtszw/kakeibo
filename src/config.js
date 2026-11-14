@@ -3,6 +3,7 @@ export const CONFIG = {
   SHEETS: {
     DASHBOARD: "ダッシュボード",
     KNOWLEDGE: "ナレッジベース",
+    EXCLUSIONS: "除外ドメイン",
     LEDGER_2026: "2026年"
   },
   CONFIDENCE_THRESHOLD: 0.8,

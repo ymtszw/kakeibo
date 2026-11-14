@@ -21,14 +21,22 @@ import { KnowledgeBase } from './knowledge.js';
 import { needsExploration, gatherEvidence } from './explorer.js';
 import { SheetsClient } from './sheets.js';
 import { Ledger, HEADER as LEDGER_HEADER, primaryId } from './ledger.js';
+import { ExclusionStore, EXCLUSION_HEADER, extractDomain } from './exclusions.js';
 import { STATUS, PENDING_CATEGORY, isConvenienceStore, isValidCategory } from './categories.js';
 import { FILES, readJson, writeJson, writeText, archive } from './staging.js';
 import { buildDashboard } from './dashboard.js';
 
-// Exclude high-volume developer mailing lists / CI bots at the Gmail query level
-const NOISE_QUERY_EXCLUSIONS = '-from:github.com -from:elm-lang.discourse.group -from:googlegroups.com';
-
 const KB_HEADER = ['パターン種別', 'マッチ文字列', 'カテゴリ', '具体用途', '登録日時', '備考／メモ'];
+
+function formatTimingReport(phases, extra = '') {
+  const total = phases.reduce((s, p) => s + p.ms, 0) || 1;
+  const lines = [`⏱️ Phase Timing Report (total ${(total / 1000).toFixed(2)}s${extra ? `, ${extra}` : ''}):`];
+  for (const p of phases) {
+    const pct = ((p.ms / total) * 100).toFixed(1).padStart(5);
+    lines.push(`  - ${p.name.padEnd(14)} ${(p.ms / 1000).toFixed(2).padStart(6)}s (${pct}%)`);
+  }
+  return lines.join('\n');
+}
 
 function argValue(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -82,11 +90,15 @@ export function init() {
   if (!initialSheets.some(s => s.title === CONFIG.SHEETS.KNOWLEDGE)) {
     sheets.addSheet(CONFIG.SHEETS.KNOWLEDGE, 1);
   }
+  if (!initialSheets.some(s => s.title === CONFIG.SHEETS.EXCLUSIONS)) {
+    sheets.addSheet(CONFIG.SHEETS.EXCLUSIONS, 2);
+  }
   if (!initialSheets.some(s => s.title === '2026年')) {
-    sheets.addSheet('2026年', 2);
+    sheets.addSheet('2026年', 3);
   }
 
   sheets.writeRange(`${CONFIG.SHEETS.KNOWLEDGE}!A1:F1`, [KB_HEADER]);
+  sheets.writeRange(`${CONFIG.SHEETS.EXCLUSIONS}!A1:F1`, [EXCLUSION_HEADER]);
   sheets.writeRange(`2026年!A1:M1`, [LEDGER_HEADER]);
 
   const cfgPath = new URL('./config.js', import.meta.url);
@@ -100,43 +112,68 @@ export function init() {
 }
 
 export function collect() {
+  const phases = [];
+  const tLoad0 = Date.now();
   const sheets = new SheetsClient();
   const kb = loadKb(sheets);
+  const exclusions = new ExclusionStore(sheets).load();
   const ledger = new Ledger(sheets).load();
   const evidenceCache = readJson(FILES.evidence, {});
   const ignoredList = readJson(FILES.ignored, []);
   const ignoredSet = new Set(ignoredList);
+  phases.push({ name: 'load_sheets', ms: Date.now() - tLoad0 });
 
   const days = Number(argValue('days', 14));
   const max = Number(argValue('max', 200));
   const customQuery = argValue('query', '');
-  const windowQuery = customQuery
-    ? `${customQuery} ${NOISE_QUERY_EXCLUSIONS}`.trim()
-    : `newer_than:${days}d ${NOISE_QUERY_EXCLUSIONS}`;
+  const confirmedExcl = exclusions.confirmedDomains().map(d => `-from:${d}`).join(' ');
+  const baseQuery = customQuery || `newer_than:${days}d`;
+  const windowQuery = `${baseQuery} ${confirmedExcl}`.trim();
 
-  console.log(`KB ${kb.rules.length} rules / ledger ${ledger.records.length} rows / query: "${windowQuery}"`);
+  console.log(`KB ${kb.rules.length} rules / confirmed exclusions ${exclusions.confirmedDomains().length} / ledger ${ledger.records.length} rows`);
+  console.log(`query: "${windowQuery}"`);
 
-  // 1. Quota-safe full time-window scan (skips already-ledgered and already-ignored IDs)
+  // 1. Quota-safe full time-window scan (only confirmed exclusions skipped at query level)
   const skipIds = new Set([...ledger.messageIdSet(), ...ignoredSet]);
-  const { totalListed, messages } = fetchWindowMessages(windowQuery, { max, skipIds });
+  const { totalListed, messages, searchMs, fetchMs, cacheHits, apiFetches } = fetchWindowMessages(windowQuery, { max, skipIds });
+  phases.push({ name: 'gmail_search', ms: searchMs });
+  phases.push({ name: 'gmail_fetch', ms: fetchMs });
 
+  const tParse0 = Date.now();
   const parsed = [];
+  const candidateMails = [];
+  const nonExpenseMails = [];
   for (const mail of messages) {
     const rec = parseEmail(mail);
     if (rec) {
       parsed.push(rec);
+      candidateMails.push(mail);
     } else {
-      // Deterministically non-expense mail -> remember its ID so we never re-fetch it
       ignoredSet.add(mail.id);
+      nonExpenseMails.push(mail);
     }
   }
+  const mailCache = readJson(FILES.mailCache, {});
+  const protectedDomains = new Set();
+  for (const id of ledger.messageIdSet()) {
+    const m = mailCache[id];
+    if (m) {
+      const dom = extractDomain(m.from);
+      if (dom) protectedDomains.add(dom);
+    }
+  }
+  exclusions.recordObservedNoise(nonExpenseMails, candidateMails, { protectedDomains });
+  phases.push({ name: 'parse_filter', ms: Date.now() - tParse0 });
 
   // 2. Cross-source deduplication (also reconciles against existing ledger rows)
+  const tDedup0 = Date.now();
   const existingIds = ledger.messageIdSet();
   const fresh = correlateAndDeduplicate(parsed, existingIds, ledger.records);
-  console.log(`window listed ${totalListed} / inspected ${messages.length} / candidates ${parsed.length} / new transactions ${fresh.length}`);
+  phases.push({ name: 'dedup', ms: Date.now() - tDedup0 });
+  console.log(`window listed ${totalListed} / inspected ${messages.length} (api:${apiFetches}, cache:${cacheHits}) / candidates ${parsed.length} / new ${fresh.length}`);
 
   // 3. Decide deterministically or stage new records for in-session skill
+  const tExplore0 = Date.now();
   const added = fresh.map(rec => {
     const base = { ...rec, category: PENDING_CATEGORY, purpose: '', confidence: 0, retryCount: 0, note: '' };
     const key = rec.messageIds[0];
@@ -171,12 +208,18 @@ export function collect() {
       r.status = STATUS.PENDING;
     }
   }
+  phases.push({ name: 'explore_rules', ms: Date.now() - tExplore0 });
 
+  const tSave0 = Date.now();
+  exclusions.save();
   ledger.save();
   writeJson(FILES.evidence, evidenceCache);
   writeJson(FILES.ignored, [...ignoredSet]);
   const pending = writePending(ledger, evidenceCache);
+  phases.push({ name: 'save_sheets', ms: Date.now() - tSave0 });
+
   console.log(`pending for skill: ${pending.length} -> ${FILES.pending}`);
+  console.log(formatTimingReport(phases, `api:${apiFetches}, cache:${cacheHits}`));
 }
 
 export function apply() {

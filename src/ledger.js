@@ -83,16 +83,17 @@ export class Ledger {
     this.records.push(...records);
   }
 
-  /** Enforces tab order: [ダッシュボード, ナレッジベース, <newest year>年, <older year>年, ...] */
+  /** Enforces tab order: [ダッシュボード, ナレッジベース, 除外ドメイン, <newest year>年, ...] */
   ensureSheetOrder() {
     const all = this.sheets.listSheets();
     const dash = all.find(s => s.title === CONFIG.SHEETS.DASHBOARD);
     const kb = all.find(s => s.title === CONFIG.SHEETS.KNOWLEDGE);
+    const excl = all.find(s => s.title === CONFIG.SHEETS.EXCLUSIONS);
     const years = all
       .filter(s => YEAR_SHEET_RE.test(s.title))
       .sort((a, b) => Number(b.title.match(YEAR_SHEET_RE)[1]) - Number(a.title.match(YEAR_SHEET_RE)[1]));
 
-    const desired = [dash, kb, ...years].filter(Boolean);
+    const desired = [dash, kb, excl, ...years].filter(Boolean);
     const requests = [];
     desired.forEach((s, idx) => {
       if (s.index !== idx) {

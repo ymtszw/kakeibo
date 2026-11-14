@@ -92,9 +92,15 @@ export function getMessage(messageId, cache = null) {
  *     so it never triggers Gmail's per-minute concurrency rate limit.
  */
 export function fetchWindowMessages(query, { max = 200, skipIds = new Set() } = {}) {
+  const tSearch0 = Date.now();
   const stubs = searchMessages(query, max);
+  const searchMs = Date.now() - tSearch0;
+
+  const tFetch0 = Date.now();
   const cache = readJson(FILES.mailCache, {});
   let dirty = false;
+  let cacheHits = 0;
+  let apiFetches = 0;
   const out = [];
 
   for (const stub of stubs) {
@@ -103,9 +109,11 @@ export function fetchWindowMessages(query, { max = 200, skipIds = new Set() } = 
     const msg = getMessage(stub.id, cache);
     if (msg) {
       out.push(msg);
-      if (!wasCached) dirty = true;
+      if (wasCached) cacheHits++;
+      else { apiFetches++; dirty = true; }
     }
   }
   if (dirty) writeJson(FILES.mailCache, cache);
-  return { totalListed: stubs.length, messages: out };
+  const fetchMs = Date.now() - tFetch0;
+  return { totalListed: stubs.length, messages: out, searchMs, fetchMs, cacheHits, apiFetches };
 }
