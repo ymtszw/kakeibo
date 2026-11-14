@@ -85,4 +85,8 @@ export class SheetsClient {
   clear(range) {
     return this.batch([{ op: 'clear', range }]);
   }
+
+  setDropdown(range, values) {
+    return run(`gsheets mutate data-validation ${this.spreadsheetId} --range "${range}" --values "${values.join(',')}"`);
+  }
 }

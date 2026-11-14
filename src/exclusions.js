@@ -36,7 +36,15 @@ export class ExclusionStore {
     if (!list.some(s => s.title === CONFIG.SHEETS.EXCLUSIONS)) {
       this.sheets.addSheet(CONFIG.SHEETS.EXCLUSIONS, 2);
       this.sheets.writeRange(`${CONFIG.SHEETS.EXCLUSIONS}!A1:F1`, [EXCLUSION_HEADER]);
+      this.applyDropdown();
     }
+  }
+
+  applyDropdown() {
+    this.sheets.setDropdown(
+      `${CONFIG.SHEETS.EXCLUSIONS}!B2:B1000`,
+      [EXCLUSION_STATUS.PROPOSED, EXCLUSION_STATUS.CONFIRMED, EXCLUSION_STATUS.CANCELLED]
+    );
   }
 
   load() {
@@ -138,6 +146,7 @@ export class ExclusionStore {
     ];
     this.sheets.clear(`${CONFIG.SHEETS.EXCLUSIONS}!A1:F1000`);
     this.sheets.writeRange(`${CONFIG.SHEETS.EXCLUSIONS}!A1:F${rows.length}`, rows);
+    this.applyDropdown();
     this.dirty = false;
   }
 }
