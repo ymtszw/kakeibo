@@ -1,0 +1,11 @@
+export const CONFIG = {
+  SPREADSHEET_ID: "REDACTED_SPREADSHEET_ID",
+  SHEETS: {
+    DASHBOARD: "ダッシュボード",
+    KNOWLEDGE: "ナレッジベース",
+    LEDGER_2026: "2026年"
+  },
+  CONFIDENCE_THRESHOLD: 0.8,
+  MAX_RETRIES: 2,
+  SEARCH_WINDOW_HOURS: 2
+};
