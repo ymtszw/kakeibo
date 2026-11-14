@@ -74,43 +74,55 @@ export class ExclusionStore {
   }
 
   /**
-   * Propose noisy non-expense domains for human review (minCount >= 3).
-   * Never overrides 確定除外 or 除外取消, and skips domains that had any
-   * expense candidate in the same batch.
+   * Propose noisy non-expense domains for human review when they send >= 10
+   * non-expense mails per 30-day month.
+   * Never overrides 確定除外 or 除外取消, and skips protectedDomains.
    */
-  recordObservedNoise(nonExpenseMails, candidateMails, { minCount = 3, protectedDomains = new Set() } = {}) {
+  recordObservedNoise(nonExpenseMails, candidateMails, { minPerMonth = 10, protectedDomains = new Set() } = {}) {
     const candidateDomains = new Set([
       ...protectedDomains,
       ...candidateMails.map(m => extractDomain(m.from)).filter(Boolean)
     ]);
+    // Group by domain -> month ("YYYY-MM") to measure true monthly volume
     const stats = new Map();
 
     for (const m of nonExpenseMails) {
       const dom = extractDomain(m.from);
       if (!dom || candidateDomains.has(dom)) continue;
-      if (!stats.has(dom)) stats.set(dom, { count: 0, sample: m.subject || '' });
-      stats.get(dom).count += 1;
+      const ms = Number(m.internalDate) || Date.parse(m.date) || Date.now();
+      const ym = new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 7);
+      if (!stats.has(dom)) stats.set(dom, { total: 0, byMonth: new Map(), sample: m.subject || '' });
+      const s = stats.get(dom);
+      s.total += 1;
+      s.byMonth.set(ym, (s.byMonth.get(ym) || 0) + 1);
     }
 
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
     for (const [dom, info] of stats) {
+      const maxMonthly = Math.max(0, ...info.byMonth.values());
       const existing = this.entries.get(dom);
       if (existing) {
         if (existing.status === EXCLUSION_STATUS.CANCELLED || existing.status === EXCLUSION_STATUS.CONFIRMED) {
           continue;
         }
-        existing.count += info.count;
-        if (!existing.sample && info.sample) existing.sample = info.sample.slice(0, 60);
-        existing.updatedAt = today;
-        this.dirty = true;
-      } else if (info.count >= minCount) {
+        if (maxMonthly < minPerMonth) {
+          this.entries.delete(dom);
+          this.dirty = true;
+          continue;
+        }
+        if (existing.count !== maxMonthly) {
+          existing.count = maxMonthly;
+          existing.updatedAt = today;
+          this.dirty = true;
+        }
+      } else if (maxMonthly >= minPerMonth) {
         this.entries.set(dom, {
           domain: dom,
           status: EXCLUSION_STATUS.PROPOSED,
           sample: (info.sample || '').slice(0, 60),
-          count: info.count,
+          count: maxMonthly,
           updatedAt: today,
-          note: '高頻度・非決済メールとして自動提案（レビュー待ち）'
+          note: `月${maxMonthly}通の非決済メールとして自動提案（レビュー待ち）`
         });
         this.dirty = true;
       }

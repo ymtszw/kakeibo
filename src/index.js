@@ -162,7 +162,9 @@ export function collect() {
       if (dom) protectedDomains.add(dom);
     }
   }
-  exclusions.recordObservedNoise(nonExpenseMails, candidateMails, { protectedDomains });
+  // Evaluate monthly volume across all cached non-expense mails + current batch
+  const allNonExpense = Object.values(mailCache).filter(m => ignoredSet.has(m.id));
+  exclusions.recordObservedNoise(allNonExpense, candidateMails, { minPerMonth: 10, protectedDomains });
   phases.push({ name: 'parse_filter', ms: Date.now() - tParse0 });
 
   // 2. Cross-source deduplication (also reconciles against existing ledger rows)
