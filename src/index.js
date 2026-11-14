@@ -14,7 +14,7 @@
  */
 import fs from 'fs';
 import { CONFIG } from './config.js';
-import { fetchWindowMessages } from './gmail.js';
+import { fetchWindowMessages, flushSharedMailCache } from './gmail.js';
 import { parseEmail } from './parsers.js';
 import { correlateAndDeduplicate } from './dedup.js';
 import { KnowledgeBase } from './knowledge.js';
@@ -111,7 +111,7 @@ export function init() {
   console.log(`Initialized clean spreadsheet: https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`);
 }
 
-export function collect() {
+export async function collect() {
   const phases = [];
   const tLoad0 = Date.now();
   const sheets = new SheetsClient();
@@ -125,6 +125,7 @@ export function collect() {
 
   const days = Number(argValue('days', 14));
   const max = Number(argValue('max', 200));
+  const concurrency = Number(argValue('concurrency', 5));
   const customQuery = argValue('query', '');
   const confirmedExcl = exclusions.confirmedDomains().map(d => `-from:${d}`).join(' ');
   const baseQuery = customQuery || `newer_than:${days}d`;
@@ -135,7 +136,7 @@ export function collect() {
 
   // 1. Quota-safe full time-window scan (only confirmed exclusions skipped at query level)
   const skipIds = new Set([...ledger.messageIdSet(), ...ignoredSet]);
-  const { totalListed, messages, searchMs, fetchMs, cacheHits, apiFetches } = fetchWindowMessages(windowQuery, { max, skipIds });
+  const { totalListed, messages, searchMs, fetchMs, cacheHits, apiFetches } = await fetchWindowMessages(windowQuery, { max, skipIds, concurrency });
   phases.push({ name: 'gmail_search', ms: searchMs });
   phases.push({ name: 'gmail_fetch', ms: fetchMs });
 
@@ -213,6 +214,7 @@ export function collect() {
   phases.push({ name: 'explore_rules', ms: Date.now() - tExplore0 });
 
   const tSave0 = Date.now();
+  flushSharedMailCache();
   exclusions.save();
   ledger.save();
   writeJson(FILES.evidence, evidenceCache);
@@ -349,5 +351,11 @@ const commands = {
   dashboard: () => buildDashboard(new SheetsClient(), { withChart: !process.argv.includes('--no-chart') })
 };
 const cmd = process.argv[2];
-if (commands[cmd]) commands[cmd]();
-else if (cmd) console.error(`unknown command: ${cmd} (${Object.keys(commands).join(', ')})`);
+if (commands[cmd]) {
+  Promise.resolve(commands[cmd]()).catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+} else if (cmd) {
+  console.error(`unknown command: ${cmd} (${Object.keys(commands).join(', ')})`);
+}
