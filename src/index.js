@@ -101,10 +101,13 @@ export function init() {
   sheets.writeRange(`${CONFIG.SHEETS.EXCLUSIONS}!A1:F1`, [EXCLUSION_HEADER]);
   sheets.writeRange(`2026年!A1:M1`, [LEDGER_HEADER]);
 
-  const cfgPath = new URL('./config.js', import.meta.url);
-  const cfgText = fs.readFileSync(cfgPath, 'utf-8')
-    .replace(/SPREADSHEET_ID:\s*"[^"]*"/, `SPREADSHEET_ID: "${spreadsheetId}"`);
-  fs.writeFileSync(cfgPath, cfgText, 'utf-8');
+  const envPath = new URL('../.env', import.meta.url);
+  const envText = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
+  const line = `KAKEIBO_SPREADSHEET_ID=${spreadsheetId}`;
+  const nextEnv = /^KAKEIBO_SPREADSHEET_ID=.*$/m.test(envText)
+    ? envText.replace(/^KAKEIBO_SPREADSHEET_ID=.*$/m, line)
+    : `${envText}${envText && !envText.endsWith('\n') ? '\n' : ''}${line}\n`;
+  fs.writeFileSync(envPath, nextEnv, 'utf-8');
   CONFIG.SPREADSHEET_ID = spreadsheetId;
 
   buildDashboard(sheets, { withChart: true });

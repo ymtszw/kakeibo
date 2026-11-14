@@ -8,6 +8,9 @@ const run = cmd => execSync(cmd, { shell: 'powershell', encoding: 'utf-8', maxBu
 
 export class SheetsClient {
   constructor(spreadsheetId = CONFIG.SPREADSHEET_ID) {
+    if (!spreadsheetId) {
+      throw new Error('KAKEIBO_SPREADSHEET_ID is not set. Add it to .env (see .env.example) or run `node src/index.js init`.');
+    }
     this.spreadsheetId = spreadsheetId;
   }
 
