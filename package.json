@@ -10,7 +10,8 @@
     "apply": "node src/index.js apply",
     "hearing": "node src/index.js hearing",
     "learn": "node src/index.js learn",
-    "dashboard": "node src/index.js dashboard"
+    "dashboard": "node src/index.js dashboard",
+    "cleanup": "node src/index.js cleanup"
   },
   "keywords": ["kakeibo", "gmail", "gsheets", "antigravity"],
   "author": "",

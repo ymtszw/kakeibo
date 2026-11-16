@@ -48,7 +48,13 @@ node src/index.js dashboard
    - Apply confirmed hearing answers to `data/staging/answers.json` and run `node src/index.js learn` + `node src/index.js dashboard`.
    - Apply confirmed domain exclusions (`確定除外` / `除外取消`) to the `除外ドメイン` sheet via `gsheets mutate`.
 
-### 5. Summarize Results
+### 5. Cleanup Stale Staging Cache & Archive
+Prune old `data/staging/archive/` files, strip bodies / expire old `mail_cache.json` entries, and drop settled/orphaned `evidence.json` keys:
+```powershell
+node src/index.js cleanup
+```
+
+### 6. Summarize Results
 Provide a concise summary covering:
 - Newly registered transactions
 - `要ヒアリング` items (and any resolved answers)

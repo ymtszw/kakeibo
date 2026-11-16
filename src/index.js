@@ -14,7 +14,7 @@
  */
 import fs from 'fs';
 import { CONFIG } from './config.js';
-import { fetchWindowMessages, flushSharedMailCache } from './gmail.js';
+import { fetchWindowMessages, flushSharedMailCache, getSharedMailCache } from './gmail.js';
 import { parseEmail } from './parsers.js';
 import { correlateAndDeduplicate } from './dedup.js';
 import { KnowledgeBase } from './knowledge.js';
@@ -157,7 +157,7 @@ export async function collect() {
       nonExpenseMails.push(mail);
     }
   }
-  const mailCache = readJson(FILES.mailCache, {});
+  const mailCache = getSharedMailCache();
   const protectedDomains = new Set();
   for (const id of ledger.messageIdSet()) {
     const m = mailCache[id];
@@ -349,8 +349,100 @@ export function learn() {
   hearing(ledger);
 }
 
+/**
+ * Prune stale staging caches & archives without hurting classification accuracy:
+ *  - archive/*: delete files older than --archive-days (default 14)
+ *  - mail_cache.json: strip body on settled/ignored mails > --body-days (default 7),
+ *    and drop entries > --cache-days (default 45) unless tied to an active row
+ *  - ignored_ids.json: drop IDs whose cached mail is > --cache-days old
+ *  - evidence.json: drop orphaned keys or settled rows > --evidence-days (default 30)
+ */
+export function cleanup() {
+  const dryRun = process.argv.includes('--dry-run');
+  const archiveDays = Number(argValue('archive-days', 14));
+  const cacheDays = Number(argValue('cache-days', 45));
+  const bodyDays = Number(argValue('body-days', 7));
+  const evidenceDays = Number(argValue('evidence-days', 30));
+  const now = Date.now();
+  const DAY = 86400 * 1000;
+
+  const ledger = new Ledger(new SheetsClient()).load();
+  const activeStatuses = new Set([STATUS.PENDING, STATUS.RETRY, STATUS.HEARING]);
+  const activeIds = new Set();
+  const recentLedgerIds = new Set();
+  const settledIds = new Set();
+
+  for (const r of ledger.records) {
+    const isActive = activeStatuses.has(r.status);
+    const ts = Date.parse(r.datetime) || 0;
+    const isRecent = ts > 0 && (now - ts) <= evidenceDays * DAY;
+    for (const id of r.messageIds || []) {
+      if (isActive) activeIds.add(id);
+      else settledIds.add(id);
+      if (isRecent) recentLedgerIds.add(id);
+    }
+  }
+
+  // 1. Archive files
+  const archiveDir = new URL('../data/staging/archive', import.meta.url);
+  let archiveDeleted = 0;
+  if (fs.existsSync(archiveDir)) {
+    for (const name of fs.readdirSync(archiveDir)) {
+      const full = new URL(`../data/staging/archive/${name}`, import.meta.url);
+      const stat = fs.statSync(full);
+      if (now - stat.mtimeMs > archiveDays * DAY) {
+        if (!dryRun) fs.unlinkSync(full);
+        archiveDeleted++;
+      }
+    }
+  }
+
+  // 2. mail_cache.json & ignored_ids.json
+  const mailCache = readJson(FILES.mailCache, {});
+  const ignoredList = readJson(FILES.ignored, []);
+  const ignoredSet = new Set(ignoredList);
+  let mailDropped = 0;
+  let bodyStripped = 0;
+  let ignoredDropped = 0;
+
+  for (const [id, m] of Object.entries(mailCache)) {
+    const ms = Number(m?.internalDate) || Date.parse(m?.date) || 0;
+    const ageMs = ms > 0 ? (now - ms) : 0;
+    if (ageMs > cacheDays * DAY && !activeIds.has(id)) {
+      if (ignoredSet.delete(id)) ignoredDropped++;
+      delete mailCache[id];
+      mailDropped++;
+    } else if (ageMs > bodyDays * DAY && m?.body && (ignoredSet.has(id) || settledIds.has(id)) && !activeIds.has(id)) {
+      m.body = '';
+      bodyStripped++;
+    }
+  }
+
+  // 3. evidence.json
+  const evidenceCache = readJson(FILES.evidence, {});
+  let evidenceDropped = 0;
+  for (const key of Object.keys(evidenceCache)) {
+    if (!activeIds.has(key) && !recentLedgerIds.has(key)) {
+      delete evidenceCache[key];
+      evidenceDropped++;
+    }
+  }
+
+  if (!dryRun) {
+    writeJson(FILES.mailCache, mailCache);
+    writeJson(FILES.ignored, [...ignoredSet]);
+    writeJson(FILES.evidence, evidenceCache);
+  }
+
+  console.log(
+    `cleanup${dryRun ? ' (dry-run)' : ''}: archive -${archiveDeleted} files | ` +
+    `mail_cache -${mailDropped} entries, -${bodyStripped} bodies | ` +
+    `ignored_ids -${ignoredDropped} | evidence -${evidenceDropped} keys`
+  );
+}
+
 const commands = {
-  init, collect, apply, hearing: () => hearing(), learn,
+  init, collect, apply, hearing: () => hearing(), learn, cleanup,
   dashboard: () => buildDashboard(new SheetsClient(), { withChart: !process.argv.includes('--no-chart') })
 };
 const cmd = process.argv[2];
